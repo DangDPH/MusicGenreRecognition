@@ -1,114 +1,92 @@
-# 1_preprocess_audio.py
+# preprocessing_audio.py
 import os
-import shutil
-import math
 import librosa
-import librosa.display
+import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-import warnings
+import shutil
 
-print("Libraries for audio processing imported.")
-
-# --- Constants ---
-LABELS = ['blues', 'classical', 'country', 'disco', 'hiphop', 'jazz', 'metal', 'pop', 'reggae', 'rock']
-SOURCE_DIR = "genres"
-SAVE_DIR = "spectrogram_segments"
-
-# Audio settings
+# ============ CONFIG ============
+DATASET_PATH = "genres"
+OUTPUT_PATH = "spectrogram_data"
 SAMPLE_RATE = 22050
-DURATION = 30 # Full audio file duration
-SEGMENT_DURATION = 3 # Duration of each split segment
-SAMPLES_PER_SEGMENT = SAMPLE_RATE * SEGMENT_DURATION
+N_MELS = 128
+HOP_LENGTH = 512
+CLIP_DURATION = 3
+FULL_DURATION = 30
+# ================================
 
-def process_audio_files(source_dir, save_dir):
-    """
-    Loads all audio files, splits them into 3-second segments,
-    creates a spectrogram for each segment, and saves them to
-    train/test directories.
-    """
-    print(f"\n--- Starting Audio Processing ---")
-    
-    # Clean up old directory
-    if os.path.exists(save_dir):
-        shutil.rmtree(save_dir)
-        print(f"Removed old directory: {save_dir}")
-        
-    # Create new directories
-    train_path = os.path.join(save_dir, "train")
-    test_path = os.path.join(save_dir, "test")
-    os.makedirs(train_path, exist_ok=True)
-    os.makedirs(test_path, exist_ok=True)
+# --- Prepare output directory ---
+print("\n--- Preparing Output Directory ---")
+if os.path.exists(OUTPUT_PATH):
+    print(f" Removing old folder: {OUTPUT_PATH}")
+    shutil.rmtree(OUTPUT_PATH)
+os.makedirs(OUTPUT_PATH, exist_ok=True)
+print(f" Created new folder: {OUTPUT_PATH}")
 
-    for label in LABELS:
-        print(f"Processing genre: {label}")
-        
-        # Create genre subfolders in train/test
-        os.makedirs(os.path.join(train_path, label), exist_ok=True)
-        os.makedirs(os.path.join(test_path, label), exist_ok=True)
-        
-        genre_path = os.path.join(source_dir, label)
-        if not os.path.exists(genre_path):
-            print(f"  [Error] Directory not found: {genre_path}")
-            continue
-            
-        # Get all audio files for the genre
-        audio_files = [f for f in os.listdir(genre_path) if f.endswith('.wav') or f.endswith('.mp3')]
-        
-        # Split files into train (60%) and test (40%) sets
-        train_files, test_files = train_test_split(audio_files, test_size=0.4, random_state=42)
-        
-        # Process training files
-        print(f"  Processing {len(train_files)} files for TRAINING...")
-        for f in train_files:
-            file_path = os.path.join(genre_path, f)
-            save_segments_to_images(file_path, os.path.join(train_path, label), label)
-
-        # Process testing files
-        print(f"  Processing {len(test_files)} files for TESTING...")
-        for f in test_files:
-            file_path = os.path.join(genre_path, f)
-            save_segments_to_images(file_path, os.path.join(test_path, label), label)
-
-    print("\n--- Audio processing complete. All spectrograms saved. ---")
-
-
-def save_segments_to_images(audio_path, save_dir, base_filename):
-    """
-    Loads one audio file, splits it, and saves spectrograms for each segment.
-    """
-    # Suppress warnings for librosa loading (e.g., for mp3)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        try:
-            signal, sr = librosa.load(audio_path, sr=SAMPLE_RATE, duration=DURATION)
-        except Exception as e:
-            print(f"    [Error] Could not load {audio_path}: {e}")
+# --- Function to split and save spectrograms ---
+def create_mel_spectrograms(audio_path, output_dir, genre, file_idx):
+    try:
+        y, sr = librosa.load(audio_path, sr=SAMPLE_RATE)
+        if len(y) == 0:
+            print(f" Skipped empty file: {audio_path}")
             return
 
-    num_segments = math.floor(len(signal) / SAMPLES_PER_SEGMENT)
-    
-    for s in range(num_segments):
-        start_sample = s * SAMPLES_PER_SEGMENT
-        end_sample = start_sample + SAMPLES_PER_SEGMENT
-        segment = signal[start_sample:end_sample]
-        
-        # Ensure segment is long enough
-        if len(segment) == SAMPLES_PER_SEGMENT:
-            try:
-                X = librosa.stft(segment)
-                Xdb = librosa.amplitude_to_db(abs(X))
-                
-                plt.figure(figsize=(14, 5))
-                librosa.display.specshow(Xdb, sr=sr)
-                
-                segment_filename = f"{base_filename}_{os.path.basename(audio_path)}_{s+1}.png"
-                plt.savefig(os.path.join(save_dir, segment_filename))
-                plt.close()
-                
-            except Exception as e:
-                print(f"    [Error] Could not process segment {s+1} of {audio_path}: {e}")
+        # Pad or trim to 30s exactly
+        target_len = int(FULL_DURATION * sr)
+        y = librosa.util.fix_length(y, size=target_len)
 
-# --- Main Execution ---
+        # 10 clips of 3 seconds each
+        samples_per_clip = int(CLIP_DURATION * sr)
+        num_segments = target_len // samples_per_clip
+
+        # Create genre folder
+        genre_path = os.path.join(output_dir, genre)
+        os.makedirs(genre_path, exist_ok=True)
+
+        # Create one image per clip
+        for i in range(num_segments):
+            start = i * samples_per_clip
+            end = start + samples_per_clip
+            y_clip = y[start:end]
+
+            # Compute mel-spectrogram
+            S = librosa.feature.melspectrogram(y=y_clip, sr=sr, n_mels=N_MELS, hop_length=HOP_LENGTH)
+            S_dB = librosa.power_to_db(S, ref=np.max)
+
+            # Normalize to [0, 1]
+            S_dB_norm = (S_dB - S_dB.min()) / (S_dB.max() - S_dB.min())
+
+            # Save each as a separate PNG file
+            save_name = f"{genre}_{file_idx:03d}_{i}.png"
+            save_path = os.path.join(genre_path, save_name)
+            plt.imsave(save_path, S_dB_norm, cmap='magma')
+
+        #print(f" Saved {num_segments} spectrogram image files for {genre}/{os.path.basename(audio_path)}")
+
+    except Exception as e:
+        print(f" Skipped file {audio_path}: {e}")
+
+# --- Process entire dataset ---
+def main():
+    print("\n--- Generating 3-second Mel-Spectrograms ---")
+    genres = [g for g in os.listdir(DATASET_PATH) if os.path.isdir(os.path.join(DATASET_PATH, g))]
+    total_audio = 0
+    total_images = 0
+
+    for genre in genres:
+        print(f"\n Processing genre: {genre}")
+        genre_path = os.path.join(DATASET_PATH, genre)
+        files = [f for f in os.listdir(genre_path) if f.endswith('.wav')]
+
+        for idx, file in enumerate(files):
+            file_path = os.path.join(genre_path, file)
+            create_mel_spectrograms(file_path, OUTPUT_PATH, genre, idx)
+            total_audio += 1
+            total_images += FULL_DURATION // CLIP_DURATION
+
+    print(f"\n All spectrograms generated successfully for {len(genres)} genres.")
+    print(f" Output folder: {os.path.abspath(OUTPUT_PATH)}")
+    #print(f" Created {total_images} spectrogram images from {total_audio} audio files.")
+
 if __name__ == "__main__":
-    process_audio_files(source_dir=SOURCE_DIR, save_dir=SAVE_DIR)
+    main()
