@@ -1,187 +1,195 @@
-# train_model_v2.py
+# train_model_inceptionv3_v2.py
+import os
 import tensorflow as tf
-from tensorflow.keras import models, layers
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import InceptionV3
+# --- ADD THIS IMPORT ---
+from tensorflow.keras.applications.inception_v3 import preprocess_input
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping
 from sklearn.metrics import classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import os
+import shutil  # <-- ADDED THIS IMPORT
 
-# ============ CONFIG ============
+# ================= CONFIG =================
 DATA_DIR = "spectrogram_data"
-IMG_SIZE = (128, 128)
+OUTPUT_DIR = "results_inceptionv3_v2"
+IMG_SIZE = (150, 150) 
 BATCH_SIZE = 32
-EPOCHS = 30
-OUTPUT_DIR = "results"   # Folder to save confusion matrix & graphs
-# ================================
+PHASE1_EPOCHS = 10
+PHASE2_EPOCHS = 30
+TOTAL_EPOCHS = PHASE1_EPOCHS + PHASE2_EPOCHS
+# ==========================================
 
+# --- NEW: Clean and prepare output directory ---
+if os.path.exists(OUTPUT_DIR):
+    print(f"\n--- Removing old results folder: {OUTPUT_DIR} ---")
+    shutil.rmtree(OUTPUT_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+print(f"--- Created new, empty results folder: {OUTPUT_DIR} ---")
+# ---
 
 # --- Step 1: Data Loading ---
 print("\n--- Step 1: Loading and Preparing Data ---")
 
-# Create one generator for TRAINING (with augmentation)
 train_datagen = ImageDataGenerator(
-    rescale=1./255,
-    rotation_range=10,      # Augmentation
-    zoom_range=0.1,         # Augmentation
-    horizontal_flip=True,   # Augmentation
-    validation_split=0.2    # Use 20% of data for validation
+    # rescale=1./255, # <-- REMOVED THIS (THE BUG)
+    preprocessing_function=preprocess_input,
+    rotation_range=20,
+    zoom_range=0.2,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    brightness_range=[0.8, 1.2],
+    horizontal_flip=True,
+    validation_split=0.2
+)
+val_datagen = ImageDataGenerator(
+    preprocessing_function=preprocess_input, 
+    validation_split=0.2
 )
 
-# Create a SECOND generator for VALIDATION (NO augmentation)
-validation_datagen = ImageDataGenerator(
-    rescale=1./255,         # Only rescale
-    validation_split=0.2    # Must match the training split
-)
-
-# ---
 train_gen = train_datagen.flow_from_directory(
     DATA_DIR,
     target_size=IMG_SIZE,
     batch_size=BATCH_SIZE,
     subset='training',
-    class_mode='categorical'
+    class_mode='categorical',
+    shuffle=True
 )
-
-val_gen = validation_datagen.flow_from_directory(
+val_gen = val_datagen.flow_from_directory(
     DATA_DIR,
     target_size=IMG_SIZE,
     batch_size=BATCH_SIZE,
     subset='validation',
     class_mode='categorical',
-    shuffle=False             # <-- THIS IS THE CRITICAL FIX
+    shuffle=False
 )
 
-# --- Step 2: Build Manual VGG16 Model ---
-print("\n--- Step 2: Building Manual VGG16-like CNN ---")
+# --- Step 2: Build InceptionV3 Transfer Learning Model ---
+print("\n--- Step 2: Building InceptionV3 Transfer Learning Model ---")
 
-def build_cnn_model(input_shape=(128, 128, 3), num_classes=10):
-    model = models.Sequential([
+base_model = InceptionV3(weights='imagenet', include_top=False, input_shape=(*IMG_SIZE, 3))
+base_model.trainable = False  # Freeze for Phase 1
 
-        # --- Block 1 ---
-        layers.Conv2D(32, (3,3), activation='relu', padding='same', input_shape=input_shape),
-        layers.Conv2D(32, (3,3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2,2)),
-        layers.Dropout(0.2),
+model = models.Sequential([
+    base_model,
+    layers.GlobalAveragePooling2D(),
+    layers.Dropout(0.5),
+    layers.Dense(512, activation='relu'),
+    layers.Dropout(0.3),
+    layers.Dense(256, activation='relu'),
+    layers.Dense(train_gen.num_classes, activation='softmax')
+])
 
-        # --- Block 2 ---
-        layers.Conv2D(64, (3,3), activation='relu', padding='same'),
-        layers.Conv2D(64, (3,3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2,2)),
-        layers.Dropout(0.3),
-
-        # --- Block 3 ---
-        layers.Conv2D(128, (3,3), activation='relu', padding='same'),
-        layers.Conv2D(128, (3,3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2,2)),
-        layers.Dropout(0.4),
-
-        # --- Block 4 ---
-        layers.Conv2D(256, (3,3), activation='relu', padding='same'),
-        layers.Conv2D(256, (3,3), activation='relu', padding='same'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2,2)),
-        layers.Dropout(0.5),
-
-        # --- Classification Head ---
-        layers.GlobalAveragePooling2D(),
-        layers.Dense(256, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(num_classes, activation='softmax')
-    ])
-
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    return model
-
-model = build_cnn_model(input_shape=(*IMG_SIZE, 3), num_classes=train_gen.num_classes)
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
               loss='categorical_crossentropy',
               metrics=['accuracy'])
 model.summary()
 
-# --- Step 3: Training ---
-print("\n--- Step 3: Training the Model ---")
-callbacks = [
-    ModelCheckpoint(os.path.join(OUTPUT_DIR, "best_model_manual_vgg16.keras"), save_best_only=True, verbose=1),
-    ReduceLROnPlateau(patience=3, factor=0.5, verbose=1),
-    EarlyStopping(patience=6, restore_best_weights=True, verbose=1)
+# --- Step 3: Phase 1 - Train Top Layers ---
+print("\n--- Step 3: Training Only Top Layers (Phase 1) ---")
+
+callbacks_phase1 = [
+    ModelCheckpoint(os.path.join(OUTPUT_DIR, "best_model_phase1.keras"), monitor='val_accuracy', save_best_only=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1),
+    EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True, verbose=1)
 ]
 
-history = model.fit(
+history_phase1 = model.fit(
     train_gen,
-    epochs=EPOCHS,
+    epochs=PHASE1_EPOCHS,
     validation_data=val_gen,
-    callbacks=callbacks
+    callbacks=callbacks_phase1
 )
 
-# --- Step 4: Evaluation ---
-print("\n--- Step 4: Evaluating the Best Model ---")
-best_model = tf.keras.models.load_model(os.path.join(OUTPUT_DIR, "best_model_manual_vgg16.keras"))
+# --- Step 4: Phase 2 - Fine-Tuning ---
+print("\n--- Step 4: Fine-Tuning the Last Layers (Phase 2) ---")
 
+base_model.trainable = True
+for layer in base_model.layers[:-80]:  # Unfreeze last 80 layers for fine-tuning
+    layer.trainable = False
+
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-5),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+
+callbacks_phase2 = [
+    ModelCheckpoint(os.path.join(OUTPUT_DIR, "best_model_finetuned.keras"), monitor='val_accuracy', save_best_only=True, verbose=1),
+    ReduceLROnPlateau(monitor='val_loss', patience=3, factor=0.5, verbose=1, min_lr=1e-6),
+    EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True, verbose=1)
+]
+
+history_phase2 = model.fit(
+    train_gen,
+    initial_epoch=history_phase1.epoch[-1], # <-- Start where Phase 1 left off
+    epochs=TOTAL_EPOCHS, # <-- Train up to the total
+    validation_data=val_gen,
+    callbacks=callbacks_phase2
+)
+
+# --- Step 5: Evaluation ---
+print("\n--- Step 5: Evaluating the Best Fine-Tuned Model ---")
+
+best_model = tf.keras.models.load_model(os.path.join(OUTPUT_DIR, "best_model_finetuned.keras"))
 val_gen.reset()
 Y_pred = best_model.predict(val_gen)
 y_pred = np.argmax(Y_pred, axis=1)
 
-print("\n--- Classification Report ---")
+print("\n--- Classification Report (Fine-Tuned) ---")
 print(classification_report(val_gen.classes, y_pred, target_names=val_gen.class_indices.keys()))
 
-# Confusion Matrix
+# --- FIXED CONFUSION MATRIX ---
 cm = confusion_matrix(val_gen.classes, y_pred)
-
-# Get the list of genre names from the generator
 class_names = list(val_gen.class_indices.keys())
 
-plt.figure(figsize=(12, 10))  # Make the figure larger
+plt.figure(figsize=(12, 10))
 sns.heatmap(
     cm,
-    annot=True,            # Show the numbers in each cell
-    fmt='g',               # Use normal number format (no scientific notation)
-    cmap='Blues',          # Use a clearer color map
-    xticklabels=class_names, # Add genre names to x-axis
-    yticklabels=class_names  # Add genre names to y-axis
+    annot=True, # <-- Show numbers
+    fmt='g',    # <-- No scientific notation
+    cmap='Blues', # <-- Use a clearer colormap
+    xticklabels=class_names, # <-- Add genre labels
+    yticklabels=class_names  # <-- Add genre labels
 )
-plt.title("Confusion Matrix")
+plt.title("Confusion Matrix - InceptionV3")
 plt.xlabel("Predicted Label")
 plt.ylabel("True Label")
-cm_path = os.path.join(OUTPUT_DIR, "confusion_matrix.png")
-plt.savefig(cm_path, bbox_inches='tight')
+plt.savefig(os.path.join(OUTPUT_DIR, "confusion_matrix.png"), bbox_inches='tight')
 plt.close()
 
-# --- Step 5: Training Graphs ---
-print("\n--- Step 5: Saving Training Curves ---")
+# --- Step 6: Training Curves ---
+print("\n--- Step 6: Saving Training Curves ---")
+
+# Combine history from both phases
+acc = history_phase1.history['accuracy'] + history_phase2.history['accuracy']
+val_acc = history_phase1.history['val_accuracy'] + history_phase2.history['val_accuracy']
+loss = history_phase1.history['loss'] + history_phase2.history['loss']
+val_loss = history_phase1.history['val_loss'] + history_phase2.history['val_loss']
+
 plt.figure(figsize=(10,5))
-plt.plot(history.history['accuracy'], label='Train Accuracy')
-plt.plot(history.history['val_accuracy'], label='Val Accuracy')
-plt.title('Training vs Validation Accuracy')
+plt.plot(acc, label='Train Accuracy')
+plt.plot(val_acc, label='Val Accuracy')
+plt.title('Training vs Validation Accuracy (Full Run)')
+plt.axvline(x=PHASE1_EPOCHS-1, color='red', linestyle='--', label='Fine-Tuning Start')
 plt.xlabel('Epochs')
 plt.ylabel('Accuracy')
 plt.legend()
 plt.grid(True)
-acc_path = os.path.join(OUTPUT_DIR, "accuracy_curve.png")
-plt.savefig(acc_path, bbox_inches='tight')
+plt.savefig(os.path.join(OUTPUT_DIR, "accuracy_curve_full.png"))
 plt.close()
 
 plt.figure(figsize=(10,5))
-plt.plot(history.history['loss'], label='Train Loss')
-plt.plot(history.history['val_loss'], label='Val Loss')
-plt.title('Training vs Validation Loss')
+plt.plot(loss, label='Train Loss')
+plt.plot(val_loss, label='Val Loss')
+plt.title('Training vs Validation Loss (Full Run)')
+plt.axvline(x=PHASE1_EPOCHS-1, color='red', linestyle='--', label='Fine-Tuning Start')
 plt.xlabel('Epochs')
 plt.ylabel('Loss')
 plt.legend()
 plt.grid(True)
-loss_path = os.path.join(OUTPUT_DIR, "loss_curve.png")
-plt.savefig(loss_path, bbox_inches='tight')
+plt.savefig(os.path.join(OUTPUT_DIR, "loss_curve_full.png"))
 plt.close()
 
-print(f" Accuracy and loss curves saved to {OUTPUT_DIR}")
-print("\n Training and evaluation completed successfully.")
+print(f"\n Training and evaluation completed successfully. Results saved in: {OUTPUT_DIR}")
