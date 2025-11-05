@@ -61,7 +61,6 @@ def create_mel_spectrograms(audio_path, output_dir, genre, file_idx):
             save_path = os.path.join(genre_path, save_name)
             plt.imsave(save_path, S_dB_norm, cmap='magma')
 
-        #print(f" Saved {num_segments} spectrogram image files for {genre}/{os.path.basename(audio_path)}")
 
     except Exception as e:
         print(f" Skipped file {audio_path}: {e}")

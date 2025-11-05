@@ -1,4 +1,4 @@
-# train_model_inceptionv3_v2.py
+# train_model.py
 import os
 import tensorflow as tf
 from tensorflow.keras import layers, models
@@ -15,7 +15,7 @@ import shutil  # <-- ADDED THIS IMPORT
 
 # ================= CONFIG =================
 DATA_DIR = "spectrogram_data"
-OUTPUT_DIR = "results_inceptionv3_v2"
+OUTPUT_DIR = "results"
 IMG_SIZE = (150, 150) 
 BATCH_SIZE = 32
 PHASE1_EPOCHS = 10
@@ -153,7 +153,7 @@ sns.heatmap(
     xticklabels=class_names, # <-- Add genre labels
     yticklabels=class_names  # <-- Add genre labels
 )
-plt.title("Confusion Matrix - InceptionV3")
+plt.title("Confusion Matrix")
 plt.xlabel("Predicted Label")
 plt.ylabel("True Label")
 plt.savefig(os.path.join(OUTPUT_DIR, "confusion_matrix.png"), bbox_inches='tight')

@@ -92,9 +92,7 @@ def create_spectrogram_batch(audio_path):
 
 
 def predict_genre(model, file_path):
-    """
-    Predicts the genre of a single audio file.
-    """
+   
     print(f"\nProcessing: {file_path}")
     
     # 1. Preprocess the song into a batch of segments
