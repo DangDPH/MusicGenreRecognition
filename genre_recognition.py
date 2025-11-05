@@ -13,7 +13,7 @@ import warnings
 
 # ============ CONFIG ============
 # --- This MUST match your trained InceptionV3 model ---
-MODEL_PATH = "results_inceptionv3_v2/best_model_finetuned.keras" 
+MODEL_PATH = "results/best_model_finetuned.keras" 
 GENRES = [
     'blues', 'classical', 'country', 'disco', 'hiphop',
     'jazz', 'metal', 'pop', 'reggae', 'rock'
@@ -164,4 +164,5 @@ if __name__ == "__main__":
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     warnings.filterwarnings('ignore', category=UserWarning)
     main()
+
 
